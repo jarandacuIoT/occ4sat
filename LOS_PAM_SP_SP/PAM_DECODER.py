@@ -100,11 +100,50 @@ class Process(mp.Process):
             # CONFIGURE
             neighbor_weight = 2.0
             kernel = np.array([neighbor_weight, 1.0, neighbor_weight])
-            kernel /= kernel.sum()              # normalize to sum=1
-            N_SAMPLES = 1000
-            px = (290, 180, 0)
-            threshold = 5
+            kernel /= kernel.sum()
+            # N_SAMPLES = 1000
+            # # center of your ROI
+            # cx, cy = 290, 180
+            # # size of ROI (width, height)
+            # roi_w, roi_h = 20, 20
 
+            # # pre‐compute ROI boundaries
+            # x1 = cx - roi_w // 2
+            # x2 = cx + roi_w // 2
+            # y1 = cy - roi_h // 2
+            # y2 = cy + roi_h // 2
+
+            # intensities = []       # will hold max intensity per frame
+            # max_pixel_coords = []  # will hold (x, y) of that pixel in full image coords
+
+            # for i in range(N_SAMPLES):
+            #     frame = self.capture_shared_array()  # assume shape (H, W, C) or (H, W)
+            #     if frame is None:
+            #         break
+
+            #     # extract ROI
+            #     patch = frame[y1:y2, x1:x2]
+            #     if patch.ndim == 3:
+            #         patch = patch[:, :, 0]  # pick channel 0 (or convert to grayscale first)
+
+            #     # find flat index of max, then row/col in the patch
+            #     flat_idx = np.argmax(patch)
+            #     max_row, max_col = np.unravel_index(flat_idx, patch.shape)
+
+            #     # get intensity and convert to global image coords
+            #     max_intensity = float(patch[max_row, max_col])
+            #     global_x = x1 + max_col
+            #     global_y = y1 + max_row
+
+            #     intensities.append(max_intensity)
+            #     max_pixel_coords.append((global_x, global_y))
+
+            #     print(f"Frame {i}: max intensity={max_intensity:.1f} at ({global_x}, {global_y})")                          # normalize to sum=1
+
+            N_SAMPLES = 1000
+            py, px = 170, 297
+            chan   = 0
+            threshold = 250
             # FIND NUMBER OF FRAMES REPRESENTING A SYMBOL
             intensities = []
             shortest_run = []
@@ -112,11 +151,13 @@ class Process(mp.Process):
                 frame = self.capture_shared_array()
                 if frame is None:
                     break
-                intensities.append(int(frame[px]))
+                intensities.append(int(frame[py, px, chan]))
+                print(intensities)
                 N = 7
                 box = np.ones(N)/N
-                smoothed = np.convolve(intensities, box, mode='same')         
-                bits = (smoothed > threshold).astype(np.int8)                 
+                smoothed = np.convolve(intensities, box, mode='same').astype(int)        
+                # bits = (smoothed > threshold).astype(np.int8)         
+                bits = (np.array(intensities) > threshold).astype(np.int8)                  
                 first_transition = next(
                     (i for i in range(1, len(bits)) if bits[i] != bits[i-1]),
                     None
@@ -126,7 +167,8 @@ class Process(mp.Process):
                 boundaries = np.concatenate(([0], changes, [bits.size]))
                 run_lengths = np.diff(boundaries)  
                 filtered = run_lengths[run_lengths <= 2 * run_lengths.min()]         
-                symbol_frame =  np.floor(filtered.mean()).astype(int)               
+                symbol_frame =  np.floor(filtered.min()).astype(int)             
+            symbol_frame = 19
             print(symbol_frame)
 
             # DECODE SYMBOLS
@@ -134,11 +176,12 @@ class Process(mp.Process):
             post_data = []
             found = False
             min_len = round(7 * symbol_frame)   # how many 1’s in a row to sync
+            threshold = 250
             while True:
                 frame = self.capture_shared_array()
                 if frame is None:
                     break
-                val = int(frame[px])
+                val = int(frame[py, px, chan])
                 if not found:                    
                     trans_index = 0
                     # 1) still looking for the long run of 1’s
@@ -147,7 +190,8 @@ class Process(mp.Process):
                     N = 7
                     box = np.ones(N)/N
                     smoothed = np.convolve(intensities, box, mode='same')
-                    bits = (smoothed > threshold).astype(np.int8)
+                    # bits = (smoothed > threshold).astype(np.int8)
+                    bits = (np.array(intensities) > threshold).astype(np.int8)                
                     # print(bits)
                     # locate runs
                     changes = np.nonzero(np.diff(bits) != 0)[0] + 1
@@ -173,15 +217,25 @@ class Process(mp.Process):
                     N = 7
                     box = np.ones(N)/N
                     smoothed = np.convolve(post_data, box, mode='same')
-                    bits = (smoothed > threshold).astype(np.int8)
+                    # bits = (smoothed > threshold).astype(np.int8)
+                    bits = (np.array(post_data) > threshold).astype(np.int8)                       
                     results = []
                     if self.find_first_transition(bits)[0]:
                         bits = bits [self.find_first_transition(bits)[1]:]
-                        if len(bits)>=8*symbol_frame:
-                            for i in range(0, bits.size, symbol_frame):
-                                chunk = bits[i : i + symbol_frame]
-                                results.append(np.median(chunk))   
-                            bit_string = ''.join(str(int(x)) for x in results)
+                        if len(bits)>=4*symbol_frame: #Value depend on order of modulation
+                            # print(post_data[-int(4*symbol_frame):])
+                            data = np.array(post_data[-int(4*symbol_frame):])
+                            levels      = np.array([  0, 160, 210, 255])
+                            class_label = np.array([  3,   2,   1,   0])  # whatever labels you want
+                            idx = np.abs(data[:,None] - levels[None,:]).argmin(axis=1)
+
+                            # map back to your class labels
+                            labels = class_label[idx]                        
+                            for i in range(0, labels.size, symbol_frame):
+                                chunk = labels[i : i + symbol_frame]
+                                results.append(np.median(chunk)) 
+                            binary_strings = [format(int(x), '02b') for x in results]
+                            bit_string = ''.join(binary_strings)
                             ascii_char = chr(int(bit_string, 2))
                             print(ascii_char)
                             N_SAMPLES = 0
@@ -201,6 +255,7 @@ class Process(mp.Process):
         - flag is True if a transition is found, False otherwise
         - index is the 0-based position of the first transition (or None)
         """
+        i=-1
         for i in range(1, len(lst)):
             if lst[i] != lst[i-1]:
                 return True, i
@@ -215,7 +270,7 @@ if __name__ == "__main__":
         "FrameRate": 120,
         "FrameDurationLimits": (8000_000, 8000_000),  # exactly 8 ms per frame → 125 fps
         "ExposureTime":   8000,   # 8 ms max
-        "AnalogueGain":   8.0,    # low gain to reduce sensor overhead
+        "AnalogueGain":   4.0,    # low gain to reduce sensor overhead
         },
         buffer_count=8,       # more buffers for smoother pipelining
     )
