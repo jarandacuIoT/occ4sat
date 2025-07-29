@@ -141,9 +141,10 @@ class Process(mp.Process):
             #     print(f"Frame {i}: max intensity={max_intensity:.1f} at ({global_x}, {global_y})")                          # normalize to sum=1
 
             N_SAMPLES = 1000
-            py, px = 170, 297
+            py,px = 111+45, 249+55
+            # py, px = 170, 297
             chan   = 0
-            threshold = 250
+            threshold = 240
             # FIND NUMBER OF FRAMES REPRESENTING A SYMBOL
             intensities = []
             shortest_run = []
@@ -176,7 +177,7 @@ class Process(mp.Process):
             post_data = []
             found = False
             min_len = round(7 * symbol_frame)   # how many 1’s in a row to sync
-            threshold = 250
+            threshold = 240
             while True:
                 frame = self.capture_shared_array()
                 if frame is None:
@@ -222,20 +223,23 @@ class Process(mp.Process):
                     results = []
                     if self.find_first_transition(bits)[0]:
                         bits = bits [self.find_first_transition(bits)[1]:]
-                        if len(bits)>=4*symbol_frame: #Value depend on order of modulation
+                        if len(bits)>=2*symbol_frame: #Value depend on order of modulation
                             # print(post_data[-int(4*symbol_frame):])
-                            data = np.array(post_data[-int(4*symbol_frame):])
-                            levels      = np.array([  0, 160, 210, 255])
-                            class_label = np.array([  3,   2,   1,   0])  # whatever labels you want
+                            data = np.array(post_data[-int(2*symbol_frame):])
+                            print(data)
+                            levels      = np.array([247.0, 235.5, 222.5, 208.5, 200.5, 193.5, 182.5, 161.5, 154.5, 145.0, 127.0, 107.5, 77.5, 65.5, 36.0])
+                            class_label = (np.arange(15))  # whatever labels you want
                             idx = np.abs(data[:,None] - levels[None,:]).argmin(axis=1)
-
                             # map back to your class labels
                             labels = class_label[idx]                        
                             for i in range(0, labels.size, symbol_frame):
                                 chunk = labels[i : i + symbol_frame]
-                                results.append(np.median(chunk)) 
-                            binary_strings = [format(int(x), '02b') for x in results]
+                                print(chunk)
+                                results.append(np.floor(np.mean(chunk) + 0.5).astype(int))
+                            print(results)
+                            binary_strings = [format(int(x), '04b') for x in results]
                             bit_string = ''.join(binary_strings)
+                            print(bit_string)                        
                             ascii_char = chr(int(bit_string, 2))
                             print(ascii_char)
                             N_SAMPLES = 0
@@ -269,8 +273,8 @@ if __name__ == "__main__":
         controls={
         "FrameRate": 120,
         "FrameDurationLimits": (8000_000, 8000_000),  # exactly 8 ms per frame → 125 fps
-        "ExposureTime":   8000,   # 8 ms max
-        "AnalogueGain":   4.0,    # low gain to reduce sensor overhead
+        "ExposureTime":   60,   # 8 ms max
+        "AnalogueGain":   1.0,    # low gain to reduce sensor overhead
         },
         buffer_count=8,       # more buffers for smoother pipelining
     )

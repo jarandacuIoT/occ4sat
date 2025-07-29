@@ -15,8 +15,16 @@ from picamera2 import Picamera2
 
 # 0️⃣  Start the camera in a small preview mode
 picam2 = Picamera2()
-preview_cfg = picam2.create_preview_configuration(
-    main={"size": (640, 480), "format": "RGB888"})
+preview_cfg = picam2.create_video_configuration(
+    main={"size": (680, 480), "format": "RGB888"},
+    controls={
+    "FrameRate": 120,
+    "FrameDurationLimits": (8000_000, 8000_000),  # exactly 8 ms per frame → 125 fps
+    "ExposureTime":   60,   # 8 ms max
+    "AnalogueGain":   1.0,    # low gain to reduce sensor overhead
+    },
+    buffer_count=8,       # more buffers for smoother pipelining
+)
 picam2.configure(preview_cfg)
 picam2.start()
 time.sleep(0.5)  # let AE/G settle
