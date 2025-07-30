@@ -13,6 +13,7 @@ from ctypes import CDLL, c_int, c_long, get_errno
 from threading import Thread
 from picamera2 import Picamera2
 import sys
+import cv2
 
 class Process(mp.Process):
     def __init__(self, picam2, name='main', *args, **kwargs):
@@ -100,51 +101,14 @@ class Process(mp.Process):
             # CONFIGURE
             neighbor_weight = 2.0
             kernel = np.array([neighbor_weight, 1.0, neighbor_weight])
-            kernel /= kernel.sum()
-            # N_SAMPLES = 1000
-            # # center of your ROI
-            # cx, cy = 290, 180
-            # # size of ROI (width, height)
-            # roi_w, roi_h = 20, 20
+            kernel /= kernel.sum()              # normalize to sum=1
+            N_SAMPLES = 2
+            x_start, y_start, x_end, y_end = (340,0,420,479)
+            channel = 0
+            threshold = 5
 
-            # # pre‐compute ROI boundaries
-            # x1 = cx - roi_w // 2
-            # x2 = cx + roi_w // 2
-            # y1 = cy - roi_h // 2
-            # y2 = cy + roi_h // 2
+            #TODO: CAPTURE MORE FAMES 
 
-            # intensities = []       # will hold max intensity per frame
-            # max_pixel_coords = []  # will hold (x, y) of that pixel in full image coords
-
-            # for i in range(N_SAMPLES):
-            #     frame = self.capture_shared_array()  # assume shape (H, W, C) or (H, W)
-            #     if frame is None:
-            #         break
-
-            #     # extract ROI
-            #     patch = frame[y1:y2, x1:x2]
-            #     if patch.ndim == 3:
-            #         patch = patch[:, :, 0]  # pick channel 0 (or convert to grayscale first)
-
-            #     # find flat index of max, then row/col in the patch
-            #     flat_idx = np.argmax(patch)
-            #     max_row, max_col = np.unravel_index(flat_idx, patch.shape)
-
-            #     # get intensity and convert to global image coords
-            #     max_intensity = float(patch[max_row, max_col])
-            #     global_x = x1 + max_col
-            #     global_y = y1 + max_row
-
-            #     intensities.append(max_intensity)
-            #     max_pixel_coords.append((global_x, global_y))
-
-            #     print(f"Frame {i}: max intensity={max_intensity:.1f} at ({global_x}, {global_y})")                          # normalize to sum=1
-
-            N_SAMPLES = 1000
-            py,px = 111+45, 249+55
-            # py, px = 170, 297
-            chan   = 0
-            threshold = 240
             # FIND NUMBER OF FRAMES REPRESENTING A SYMBOL
             intensities = []
             shortest_run = []
@@ -152,24 +116,13 @@ class Process(mp.Process):
                 frame = self.capture_shared_array()
                 if frame is None:
                     break
-                intensities.append(int(frame[py, px, chan]))
-                print(intensities)
-                N = 7
-                box = np.ones(N)/N
-                smoothed = np.convolve(intensities, box, mode='same').astype(int)        
-                # bits = (smoothed > threshold).astype(np.int8)         
-                bits = (np.array(intensities) > threshold).astype(np.int8)                  
-                first_transition = next(
-                    (i for i in range(1, len(bits)) if bits[i] != bits[i-1]),
-                    None
-                )
-                bits = bits[first_transition:]                    
-                changes = np.nonzero(np.diff(bits) != 0)[0] + 1
-                boundaries = np.concatenate(([0], changes, [bits.size]))
-                run_lengths = np.diff(boundaries)  
-                filtered = run_lengths[run_lengths <= 2 * run_lengths.min()]         
-                symbol_frame =  np.floor(filtered.min()).astype(int)             
-            symbol_frame = 19
+                sub = frame[y_start:y_end, x_start:x_end, :]
+                gray = sub.mean(axis=2)  
+                cv2.imwrite("asd.png", gray)
+                row_means = gray.mean(axis=1)
+                thresh = 10
+                binary_means = (row_means > thresh).astype(np.uint8) * 255
+                symbol_frame = int(round(longest_consecutive_ones(binary_means)/8))
             print(symbol_frame)
 
             # DECODE SYMBOLS
@@ -177,12 +130,24 @@ class Process(mp.Process):
             post_data = []
             found = False
             min_len = round(7 * symbol_frame)   # how many 1’s in a row to sync
-            threshold = 240
             while True:
                 frame = self.capture_shared_array()
                 if frame is None:
                     break
-                val = int(frame[py, px, chan])
+                sub = frame[y_start:y_end, x_start:x_end, :]
+                gray = sub.mean(axis=2)  
+                row_means = gray.mean(axis=1)
+                thresh = 10
+                binary_means = (row_means > thresh).astype(np.uint8)
+                first_zero_after_at_least_n_ones(binary_means, min_len)
+                index_trans = int(first_zero_after_at_least_n_ones(binary_means, min_len))
+                data = binary_means[index_trans:index_trans+8*symbol_frame]
+                for i in range(0, len(data), symbol_frame):
+                    chunk = data[i : i + symbol_frame]   
+                    print(chunk)             
+                # print(data)
+
+
                 if not found:                    
                     trans_index = 0
                     # 1) still looking for the long run of 1’s
@@ -191,8 +156,7 @@ class Process(mp.Process):
                     N = 7
                     box = np.ones(N)/N
                     smoothed = np.convolve(intensities, box, mode='same')
-                    # bits = (smoothed > threshold).astype(np.int8)
-                    bits = (np.array(intensities) > threshold).astype(np.int8)                
+                    bits = (smoothed > threshold).astype(np.int8)
                     # print(bits)
                     # locate runs
                     changes = np.nonzero(np.diff(bits) != 0)[0] + 1
@@ -218,28 +182,15 @@ class Process(mp.Process):
                     N = 7
                     box = np.ones(N)/N
                     smoothed = np.convolve(post_data, box, mode='same')
-                    # bits = (smoothed > threshold).astype(np.int8)
-                    bits = (np.array(post_data) > threshold).astype(np.int8)                       
+                    bits = (smoothed > threshold).astype(np.int8)
                     results = []
                     if self.find_first_transition(bits)[0]:
                         bits = bits [self.find_first_transition(bits)[1]:]
-                        if len(bits)>=2*symbol_frame: #Value depend on order of modulation
-                            # print(post_data[-int(4*symbol_frame):])
-                            data = np.array(post_data[-int(2*symbol_frame):])
-                            print(data)
-                            levels      = np.array([247.0, 235.5, 222.5, 208.5, 200.5, 193.5, 182.5, 161.5, 154.5, 145.0, 127.0, 107.5, 77.5, 65.5, 36.0])
-                            class_label = (np.arange(15))  # whatever labels you want
-                            idx = np.abs(data[:,None] - levels[None,:]).argmin(axis=1)
-                            # map back to your class labels
-                            labels = class_label[idx]                        
-                            for i in range(0, labels.size, symbol_frame):
-                                chunk = labels[i : i + symbol_frame]
-                                print(chunk)
-                                results.append(np.floor(np.mean(chunk) + 0.5).astype(int))
-                            print(results)
-                            binary_strings = [format(int(x), '04b') for x in results]
-                            bit_string = ''.join(binary_strings)
-                            print(bit_string)                        
+                        if len(bits)>=8*symbol_frame:
+                            for i in range(0, bits.size, symbol_frame):
+                                chunk = bits[i : i + symbol_frame]
+                                results.append(np.median(chunk))   
+                            bit_string = ''.join(str(int(x)) for x in results)
                             ascii_char = chr(int(bit_string, 2))
                             print(ascii_char)
                             N_SAMPLES = 0
@@ -259,25 +210,70 @@ class Process(mp.Process):
         - flag is True if a transition is found, False otherwise
         - index is the 0-based position of the first transition (or None)
         """
-        i=-1
         for i in range(1, len(lst)):
             if lst[i] != lst[i-1]:
                 return True, i
         return False, i
+import numpy as np
+
+def first_zero_after_at_least_n_ones(arr: np.ndarray, n: int) -> int:
+    """
+    Return the index of the first 0 that comes right after a run of at least
+    n consecutive nonzero values in a 1D array, or -1 if no such transition.
+    """
+    # binarize to 0/1
+    a = (arr != 0).astype(int)
+    # pad so edge‐runs get detected
+    p = np.pad(a, (1,1), mode='constant', constant_values=0)
+    # +1 marks run starts, -1 marks run ends (zero after the run)
+    d = np.diff(p)
+    starts = np.where(d ==  1)[0]
+    ends   = np.where(d == -1)[0]
+    # lengths of each run
+    lengths = ends - starts
+    # find the first run >= n
+    valid = ends[lengths >= n]
+    return int(valid[0]) if valid.size > 0 else -1
+
+def longest_consecutive_ones(arr: np.ndarray) -> int:
+    """
+    Compute the length of the longest run of nonzero values in a 1D array.
+    Works for arrays of 0/1, 0/255, True/False, etc.
+    """
+    # binarize: any nonzero → 1
+    a = (arr != 0).astype(np.int64)
+
+    # pad with 0 at both ends
+    p = np.pad(a, (1,1), mode='constant', constant_values=0)
+
+    # diffs: +1 at run starts, -1 at run ends
+    d = np.diff(p)
+    starts = np.where(d ==  1)[0]
+    ends   = np.where(d == -1)[0]
+
+    # trim to equal lengths in pathological cases
+    n = min(len(starts), len(ends))
+    if n == 0:
+        return 0
+
+    # compute run lengths
+    lengths = ends[:n] - starts[:n]
+    return int(lengths.max())
+
 
 if __name__ == "__main__":
     # 1️⃣  Start camera with a VIDEO config at 320×240, 60 fps
     picam2 = Picamera2()
     video_cfg = picam2.create_video_configuration(
-        main={"size": (680, 480), "format": "RGB888"},
-        controls={
-        "FrameRate": 120,
-        "FrameDurationLimits": (8000_000, 8000_000),  # exactly 8 ms per frame → 125 fps
-        "ExposureTime":   60,   # 8 ms max
-        "AnalogueGain":   1.0,    # low gain to reduce sensor overhead
-        },
-        buffer_count=8,       # more buffers for smoother pipelining
-    )
+    main={"size": (680, 480), "format": "RGB888"},
+    controls={
+    "FrameRate": 120,
+    "FrameDurationLimits": (8000_000, 8000_000),  # exactly 8 ms per frame → 125 fps
+    "ExposureTime":   60,   # 8 ms max
+    "AnalogueGain":   1.0,    # low gain to reduce sensor overhead
+    },
+    buffer_count=8,       # more buffers for smoother pipelining
+)
     picam2.configure(video_cfg)
     picam2.start()
 
