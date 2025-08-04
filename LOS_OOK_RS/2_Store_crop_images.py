@@ -14,6 +14,7 @@ from threading import Thread
 from picamera2 import Picamera2
 import sys
 import cv2
+import time 
 
 class Process(mp.Process):
     def __init__(self, picam2, name='main', *args, **kwargs):
@@ -102,13 +103,12 @@ class Process(mp.Process):
             neighbor_weight = 2.0
             kernel = np.array([neighbor_weight, 1.0, neighbor_weight])
             kernel /= kernel.sum()              # normalize to sum=1
-            N_SAMPLES = 2
+            N_SAMPLES = 1
             x_start, y_start, x_end, y_end = (340,0,420,479)
             channel = 0
-            threshold = 5
+            threshold = 4
 
             #TODO: CAPTURE MORE FAMES 
-
             # FIND NUMBER OF FRAMES REPRESENTING A SYMBOL
             intensities = []
             shortest_run = []
@@ -117,86 +117,47 @@ class Process(mp.Process):
                 if frame is None:
                     break
                 sub = frame[y_start:y_end, x_start:x_end, :]
-                gray = sub.mean(axis=2)  
-                cv2.imwrite("asd.png", gray)
+                gray = sub.mean(axis=2)                  
                 row_means = gray.mean(axis=1)
-                thresh = 10
-                binary_means = (row_means > thresh).astype(np.uint8) * 255
+                # print(row_means.astype(int))
+                binary_means = (row_means > threshold).astype(np.uint8) * 255
+                # print(binary_means)
+                cv2.imwrite("asd" + str(_) + ".png", binary_means)                
                 symbol_frame = int(round(longest_consecutive_ones(binary_means)/8))
             print(symbol_frame)
+            symbol_frame = 13
 
             # DECODE SYMBOLS
-            intensities = []
-            post_data = []
-            found = False
             min_len = round(7 * symbol_frame)   # how many 1’s in a row to sync
+            thresh = 10
+            N = 5
+            box = np.ones(N)/N            
             while True:
                 frame = self.capture_shared_array()
                 if frame is None:
                     break
-                sub = frame[y_start:y_end, x_start:x_end, :]
-                gray = sub.mean(axis=2)  
-                row_means = gray.mean(axis=1)
-                thresh = 10
+                # sub = frame[y_start:y_end, x_start:x_end, :]
+                # gray = sub.mean(axis=2)  
+                # row_means = gray.mean(axis=1)
+                row_means = frame[y_start:y_end, x_start:x_end, :].mean(axis=(1, 2))        
+                # print(row_means.astype(int))
                 binary_means = (row_means > thresh).astype(np.uint8)
                 first_zero_after_at_least_n_ones(binary_means, min_len)
                 index_trans = int(first_zero_after_at_least_n_ones(binary_means, min_len))
                 data = binary_means[index_trans:index_trans+8*symbol_frame]
+                results = []
                 for i in range(0, len(data), symbol_frame):
                     chunk = data[i : i + symbol_frame]   
-                    print(chunk)             
+                    # print(chunk)
+                    results.append(int(np.median(chunk)))
+                bit_string = ''.join(str(int(x)) for x in results)
+                # print(bit_string)
+                if len(bit_string)==8:
+                    ascii_char = chr(int(bit_string, 2))                    
+                    print(ascii_char)        
+                    print(time.time())
                 # print(data)
 
-
-                if not found:                    
-                    trans_index = 0
-                    # 1) still looking for the long run of 1’s
-                    intensities.append(val)
-                    # smooth + threshold → bits
-                    N = 7
-                    box = np.ones(N)/N
-                    smoothed = np.convolve(intensities, box, mode='same')
-                    bits = (smoothed > threshold).astype(np.int8)
-                    # print(bits)
-                    # locate runs
-                    changes = np.nonzero(np.diff(bits) != 0)[0] + 1
-                    boundaries = np.concatenate(([0], changes, [bits.size]))
-                    run_lengths = np.diff(boundaries)
-
-                    # scan for the first long-enough block of 1’s
-                    for i, length in enumerate(run_lengths):
-                        start = boundaries[i]
-                        end   = boundaries[i+1]
-                        if bits[start] == 1 and length >= min_len:
-                            print(f"Found 1’s sync block at idx {start}–{end-1} (length {length})")
-                            found = True
-                            # start collecting *after* this block
-                            # initialize post_data with any frames we already read beyond `end`
-                            post_data = intensities[end:]
-                            break
-
-                else:
-                    # print(post_data)
-                    # 2) after sync, collect into post_data
-                    post_data.append(val)
-                    N = 7
-                    box = np.ones(N)/N
-                    smoothed = np.convolve(post_data, box, mode='same')
-                    bits = (smoothed > threshold).astype(np.int8)
-                    results = []
-                    if self.find_first_transition(bits)[0]:
-                        bits = bits [self.find_first_transition(bits)[1]:]
-                        if len(bits)>=8*symbol_frame:
-                            for i in range(0, bits.size, symbol_frame):
-                                chunk = bits[i : i + symbol_frame]
-                                results.append(np.median(chunk))   
-                            bit_string = ''.join(str(int(x)) for x in results)
-                            ascii_char = chr(int(bit_string, 2))
-                            print(ascii_char)
-                            N_SAMPLES = 0
-                            found = False
-                            intensities = []
-                            post_data = []
 
     def close(self):
         self._send_queue.put("CLOSE")
@@ -267,14 +228,15 @@ if __name__ == "__main__":
     video_cfg = picam2.create_video_configuration(
     main={"size": (680, 480), "format": "RGB888"},
     controls={
-    "FrameRate": 120,
+    "FrameRate": 95,
     "FrameDurationLimits": (8000_000, 8000_000),  # exactly 8 ms per frame → 125 fps
-    "ExposureTime":   60,   # 8 ms max
+    "ExposureTime":   50,   # 8 ms max
     "AnalogueGain":   1.0,    # low gain to reduce sensor overhead
     },
     buffer_count=8,       # more buffers for smoother pipelining
 )
     picam2.configure(video_cfg)
+    print(video_cfg["controls"])
     picam2.start()
 
     # 2️⃣  Spawn the zero-copy worker
