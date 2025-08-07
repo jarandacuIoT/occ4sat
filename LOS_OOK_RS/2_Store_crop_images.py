@@ -155,7 +155,7 @@ class Process(mp.Process):
                 if len(bit_string)==8:
                     ascii_char = chr(int(bit_string, 2))                    
                     print(ascii_char)        
-                    print(time.time())
+                    # print(time.time())
                 # print(data)
 
 
