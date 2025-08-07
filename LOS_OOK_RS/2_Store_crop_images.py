@@ -103,7 +103,7 @@ class Process(mp.Process):
             neighbor_weight = 2.0
             kernel = np.array([neighbor_weight, 1.0, neighbor_weight])
             kernel /= kernel.sum()              # normalize to sum=1
-            N_SAMPLES = 1
+            N_SAMPLES = 0
             x_start, y_start, x_end, y_end = (340,0,420,479)
             channel = 0
             threshold = 4
@@ -119,19 +119,17 @@ class Process(mp.Process):
                 sub = frame[y_start:y_end, x_start:x_end, :]
                 gray = sub.mean(axis=2)                  
                 row_means = gray.mean(axis=1)
-                # print(row_means.astype(int))
+                print(row_means.astype(int))
                 binary_means = (row_means > threshold).astype(np.uint8) * 255
-                # print(binary_means)
+                print(binary_means)
                 cv2.imwrite("asd" + str(_) + ".png", binary_means)                
                 symbol_frame = int(round(longest_consecutive_ones(binary_means)/8))
+            symbol_frame = 17                
             print(symbol_frame)
-            symbol_frame = 13
 
             # DECODE SYMBOLS
             min_len = round(7 * symbol_frame)   # how many 1’s in a row to sync
             thresh = 10
-            N = 5
-            box = np.ones(N)/N            
             while True:
                 frame = self.capture_shared_array()
                 if frame is None:
@@ -228,9 +226,9 @@ if __name__ == "__main__":
     video_cfg = picam2.create_video_configuration(
     main={"size": (680, 480), "format": "RGB888"},
     controls={
-    "FrameRate": 95,
-    "FrameDurationLimits": (8000_000, 8000_000),  # exactly 8 ms per frame → 125 fps
-    "ExposureTime":   50,   # 8 ms max
+    "FrameRate": 300,
+    # "FrameDurationLimits": (8000_000, 8000_000),  # exactly 8 ms per frame → 125 fps
+    "ExposureTime":   1,   # 8 ms max
     "AnalogueGain":   1.0,    # low gain to reduce sensor overhead
     },
     buffer_count=8,       # more buffers for smoother pipelining
