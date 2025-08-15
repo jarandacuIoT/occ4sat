@@ -15,6 +15,7 @@ from picamera2 import Picamera2
 import sys
 import cv2
 import time 
+import string
 
 class Process(mp.Process):
     def __init__(self, picam2, name='main', *args, **kwargs):
@@ -99,6 +100,10 @@ class Process(mp.Process):
         self._return_queue.put(result)
 
     def run(self):
+        # TODO: Compute BER
+        # TODO: COMPUTE GMM
+        # TODO: COMPUTE SNR.
+            output = []
             # CONFIGURE
             neighbor_weight = 2.0
             kernel = np.array([neighbor_weight, 1.0, neighbor_weight])
@@ -124,23 +129,18 @@ class Process(mp.Process):
                 print(binary_means)
                 cv2.imwrite("asd" + str(_) + ".png", binary_means)                
                 symbol_frame = int(round(longest_consecutive_ones(binary_means)/8))
-            symbol_frame = 17                
+            symbol_frame = 17              
             print(symbol_frame)
 
             # DECODE SYMBOLS
-            min_len = round(7 * symbol_frame)   # how many 1’s in a row to sync
+            min_len = round(4.5 * symbol_frame)   # how many 1’s in a row to sync
             thresh = 10
             while True:
                 frame = self.capture_shared_array()
                 if frame is None:
                     break
-                # sub = frame[y_start:y_end, x_start:x_end, :]
-                # gray = sub.mean(axis=2)  
-                # row_means = gray.mean(axis=1)
                 row_means = frame[y_start:y_end, x_start:x_end, :].mean(axis=(1, 2))        
-                # print(row_means.astype(int))
-                binary_means = (row_means > thresh).astype(np.uint8)
-                first_zero_after_at_least_n_ones(binary_means, min_len)
+                binary_means = row_means > thresh
                 index_trans = int(first_zero_after_at_least_n_ones(binary_means, min_len))
                 data = binary_means[index_trans:index_trans+8*symbol_frame]
                 results = []
@@ -152,7 +152,11 @@ class Process(mp.Process):
                 # print(bit_string)
                 if len(bit_string)==8:
                     ascii_char = chr(int(bit_string, 2))                    
-                    print(ascii_char)        
+                    output.append(ascii_char)
+                if len(output)==100000:
+                    print(output)
+                    print(sum(missing_counts_per_cycles(output)))
+                    break
                     # print(time.time())
                 # print(data)
 
@@ -219,8 +223,55 @@ def longest_consecutive_ones(arr: np.ndarray) -> int:
     lengths = ends[:n] - starts[:n]
     return int(lengths.max())
 
+def missing_counts_per_cycles(received):
+    """
+    received: list like ["a","b","c",...], may contain noise (non a–z).
+    Returns list of missing counts per a..z cycle.
+    """
+    alphabet = string.ascii_lowercase
+    idx = {c: i for i, c in enumerate(alphabet)}
+
+    # 1) normalize + filter to a..z
+    clean = []
+    for ch in received:
+        if not ch:
+            continue
+        c = ch[0].lower()           # take first char, lowercase
+        if c in idx:                # keep only a..z
+            clean.append(c)
+
+    if not clean:
+        return []
+
+    # 2) count misses per cycle (only between observed letters, no trailing fill)
+    counts = []
+    missing_letters = set()
+    prev_i = idx[clean[0]]
+
+    for c in clean[1:]:
+        i = idx[c]
+        if i <= prev_i:  # wrap or restart → close cycle
+            counts.append(len(missing_letters))
+            missing_letters.clear()
+        else:
+            # letters skipped strictly between prev_i and i
+            for j in range(prev_i + 1, i):
+                missing_letters.add(alphabet[j])
+        prev_i = i
+
+    # close final (possibly incomplete) cycle
+    counts.append(len(missing_letters))
+    return counts
+
 
 if __name__ == "__main__":
+    received = ["a","b","c","d","h","j","k","l","m","n","o","p","q","r","s","t","u","v","w","x","y","z",
+                "a","b","c","d","f"]
+
+
+    # cycles, total = missing_per_cycles(received)
+    # total_missing = sum(c["missing_count"] for c in missing_per_cycles(received))
+    # print(total_missing)
     # 1️⃣  Start camera with a VIDEO config at 320×240, 60 fps
     picam2 = Picamera2()
     video_cfg = picam2.create_video_configuration(
