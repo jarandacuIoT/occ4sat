@@ -135,28 +135,84 @@ class Process(mp.Process):
             # DECODE SYMBOLS
             min_len = round(4.5 * symbol_frame)   # how many 1’s in a row to sync
             thresh = 10
+            # Precompute constants once
+            roi_w = x_end - x_start
+            roi_h = y_end - y_start
+            channels = 3  # RGB888
+            thresh_scaled = thresh * roi_w * channels  # compare sums to this (no division)
+            out_bytes = bytearray()
+
             while True:
                 frame = self.capture_shared_array()
                 if frame is None:
                     break
-                row_means = frame[y_start:y_end, x_start:x_end, :].mean(axis=(1, 2))        
-                binary_means = row_means > thresh
-                index_trans = int(first_zero_after_at_least_n_ones(binary_means, min_len))
-                data = binary_means[index_trans:index_trans+8*symbol_frame]
-                results = []
-                for i in range(0, len(data), symbol_frame):
-                    chunk = data[i : i + symbol_frame]   
-                    # print(chunk)
-                    results.append(int(np.median(chunk)))
-                bit_string = ''.join(str(int(x)) for x in results)
-                # print(bit_string)
-                if len(bit_string)==8:
-                    ascii_char = chr(int(bit_string, 2))                    
-                    output.append(ascii_char)
-                if len(output)==100000:
-                    print(output)
-                    print(sum(missing_counts_per_cycles(output)))
+
+                # 1) ROI view (no copy) and row sum over channels & columns (uint32 to prevent overflow)
+                roi = frame[y_start:y_end, x_start:x_end, :]
+                row_sums = roi.sum(axis=(1, 2), dtype=np.uint32)  # shape (roi_h,)
+
+                # 2) Threshold without division
+                binary_means = row_sums > thresh_scaled  # bool array length roi_h
+
+                # 3) Find start index of block (first 0 after ≥min_len of 1s)
+                idx = first_zero_after_at_least_n_ones(binary_means, min_len)
+                if idx is None or idx < 0:
+                    continue
+
+                # 4) Slice exactly the bits for one character (8 symbols)
+                total_needed = 8 * symbol_frame
+                end_idx = idx + total_needed
+                if end_idx > binary_means.size:
+                    continue  # not enough samples yet
+
+                data = binary_means[idx:end_idx]
+
+                # 5) Majority per symbol (vectorized)
+                #    reshape to (8, symbol_frame) → sum along axis=1 → majority
+                sym = data.reshape(8, symbol_frame)
+                # Using sum is faster than mean; majority threshold at > symbol_frame//2
+                bits = (sym.sum(axis=1) > (symbol_frame // 2)).astype(np.uint8)  # shape (8,)
+
+                # 6) Convert 8 bits → one byte (vectorized)
+                # Option A (fastest & clean): packbits
+                byte_val = np.packbits(bits, bitorder='big')[0]
+                # Option B (also fast): dot with bit weights
+                # byte_val = int(bits @ BIT_WEIGHTS)
+
+                out_bytes.append(int(byte_val))
+
+                # 7) Optional: batch-print every N chars to reduce I/O overhead
+                if len(out_bytes) >= 1000:
+                    output = out_bytes.decode('latin1', errors='ignore')  # raw 1:1 bytes→chars
+                    print(list(output))
+                    print("Total bits" , print(len(output)))
+                    report = analyze_alphabet_cycles(output)[1:-1]  # drop last incomplete cycle
+                    print(report)
+                    total_missing = sum(len(entry["missing"]) for entry in report)
+                    print("Total missing:", total_missing)
+                    return output,analyze_alphabet_cycles
                     break
+
+            # while True:
+            #     frame = self.capture_shared_array()
+            #     if frame is None:
+            #         break
+            #     row_means = frame[y_start:y_end, x_start:x_end, :].mean(axis=(1, 2))        
+            #     binary_means = row_means > thresh
+            #     index_trans = int(first_zero_after_at_least_n_ones(binary_means, min_len))
+            #     data = binary_means[index_trans:index_trans+8*symbol_frame]
+            #     results = []
+
+                # for i in range(0, len(data), symbol_frame):
+                #     chunk = data[i : i + symbol_frame]   
+                #     results.append(int(np.median(chunk)))
+                # bit_string = ''.join(str(int(x)) for x in results)
+                # ascii_char = chr(int(bit_string, 2))                    
+                # output.append(ascii_char)
+                # if len(output)==1000:
+                #     print(output)
+                #     print((analyze_alphabet_cycles(output))[:-1])
+                #     break
                     # print(time.time())
                 # print(data)
 
@@ -223,55 +279,110 @@ def longest_consecutive_ones(arr: np.ndarray) -> int:
     lengths = ends[:n] - starts[:n]
     return int(lengths.max())
 
-def missing_counts_per_cycles(received):
+import string
+from typing import List, Dict, Any, Tuple
+
+def analyze_alphabet_cycles(received: List[str]) -> List[Dict[str, Any]]:
     """
-    received: list like ["a","b","c",...], may contain noise (non a–z).
-    Returns list of missing counts per a..z cycle.
+    Analyze a stream of characters where the sender repeatedly transmits a..z.
+
+    Returns list of dicts with only:
+      - missing: list of missing letters
+      - substitutions: list of (expected, got)
+      - duplicates: list of duplicated letters
     """
     alphabet = string.ascii_lowercase
     idx = {c: i for i, c in enumerate(alphabet)}
 
-    # 1) normalize + filter to a..z
-    clean = []
+    # Normalize + filter to a..z
+    clean: List[str] = []
     for ch in received:
         if not ch:
             continue
-        c = ch[0].lower()           # take first char, lowercase
-        if c in idx:                # keep only a..z
+        c = str(ch)[0].lower()
+        if c in idx:
             clean.append(c)
 
+    out: List[Dict[str, Any]] = []
     if not clean:
-        return []
+        return out
 
-    # 2) count misses per cycle (only between observed letters, no trailing fill)
-    counts = []
-    missing_letters = set()
-    prev_i = idx[clean[0]]
+    def next_letter(c: str) -> str:
+        j = idx[c]
+        return alphabet[j + 1] if j < 25 else None
 
-    for c in clean[1:]:
-        i = idx[c]
-        if i <= prev_i:  # wrap or restart → close cycle
-            counts.append(len(missing_letters))
-            missing_letters.clear()
+    # State
+    in_cycle = False
+    expected = 'a'
+    cycle = None
+    last_accepted = None
+
+    def start_cycle():
+        return {"missing": [], "substitutions": [], "duplicates": []}
+
+    def close_cycle():
+        out.append(cycle)
+
+    for c in clean:
+        if not in_cycle:
+            if c == 'a':
+                in_cycle = True
+                expected = 'b'
+                cycle = start_cycle()
+                last_accepted = 'a'
+            continue
+
+        if expected is None:
+            if c == 'a':
+                close_cycle()
+                in_cycle = True
+                expected = 'b'
+                cycle = start_cycle()
+                last_accepted = 'a'
+            continue
+
+        if c == last_accepted:
+            cycle["duplicates"].append(c)
+            continue
+
+        if c == expected:
+            last_accepted = c
+            expected = next_letter(c)
+            continue
+
+        if c == 'a':
+            cur = expected
+            while cur is not None:
+                cycle["missing"].append(cur)
+                cur = next_letter(cur)
+            close_cycle()
+            in_cycle = True
+            expected = 'b'
+            cycle = start_cycle()
+            last_accepted = 'a'
+            continue
+
+        if idx[c] > idx[expected]:
+            for j in range(idx[expected], idx[c]):
+                cycle["missing"].append(alphabet[j])
+            last_accepted = c
+            expected = next_letter(c)
         else:
-            # letters skipped strictly between prev_i and i
-            for j in range(prev_i + 1, i):
-                missing_letters.add(alphabet[j])
-        prev_i = i
+            cycle["substitutions"].append((expected, c))
+            last_accepted = expected
+            expected = next_letter(last_accepted)
 
-    # close final (possibly incomplete) cycle
-    counts.append(len(missing_letters))
-    return counts
+    if in_cycle and cycle is not None:
+        cur = expected
+        while cur is not None:
+            cycle["missing"].append(cur)
+            cur = next_letter(cur)
+        close_cycle()
+
+    return out
 
 
 if __name__ == "__main__":
-    received = ["a","b","c","d","h","j","k","l","m","n","o","p","q","r","s","t","u","v","w","x","y","z",
-                "a","b","c","d","f"]
-
-
-    # cycles, total = missing_per_cycles(received)
-    # total_missing = sum(c["missing_count"] for c in missing_per_cycles(received))
-    # print(total_missing)
     # 1️⃣  Start camera with a VIDEO config at 320×240, 60 fps
     picam2 = Picamera2()
     video_cfg = picam2.create_video_configuration(
