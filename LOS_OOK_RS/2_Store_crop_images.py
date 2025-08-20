@@ -139,8 +139,12 @@ class Process(mp.Process):
             roi_w = x_end - x_start
             roi_h = y_end - y_start
             channels = 3  # RGB888
-            thresh_scaled = thresh * roi_w * channels  # compare sums to this (no division)
+            thresh_scaled = thresh * roi_w * channels  # compare sums to this (no division
+            #print(thresh_scaled*roi_h) 
             out_bytes = bytearray()
+
+            data_no_bin = []
+            data_bin = []
 
             while True:
                 frame = self.capture_shared_array()
@@ -150,7 +154,9 @@ class Process(mp.Process):
                 # 1) ROI view (no copy) and row sum over channels & columns (uint32 to prevent overflow)
                 roi = frame[y_start:y_end, x_start:x_end, :]
                 row_sums = roi.sum(axis=(1, 2), dtype=np.uint32)  # shape (roi_h,)
-
+                row_mean = roi.mean(axis=(1, 2), dtype=np.uint32)  # shape (roi_h,)
+                data_no_bin.append(row_mean)
+                #print(row_sums)
                 # 2) Threshold without division
                 binary_means = row_sums > thresh_scaled  # bool array length roi_h
 
@@ -166,7 +172,6 @@ class Process(mp.Process):
                     continue  # not enough samples yet
 
                 data = binary_means[idx:end_idx]
-
                 # 5) Majority per symbol (vectorized)
                 #    reshape to (8, symbol_frame) → sum along axis=1 → majority
                 sym = data.reshape(8, symbol_frame)
@@ -180,7 +185,7 @@ class Process(mp.Process):
                 # byte_val = int(bits @ BIT_WEIGHTS)
 
                 out_bytes.append(int(byte_val))
-
+        
                 # 7) Optional: batch-print every N chars to reduce I/O overhead
                 if len(out_bytes) >= 1000:
                     output = out_bytes.decode('latin1', errors='ignore')  # raw 1:1 bytes→chars
@@ -190,6 +195,38 @@ class Process(mp.Process):
                     print(report)
                     total_missing = sum(len(entry["missing"]) for entry in report)
                     print("Total missing:", total_missing)
+                    total_substitutions = sum(len(entry["substitutions"]) for entry in report)
+                    print("Total substitutions:", total_substitutions)
+                    total_duplicates = sum(len(entry["duplicates"]) for entry in report)
+                    print("Total duplicates:", total_duplicates)                  
+                    # Convert to numpy array
+                    arr = np.array(data_no_bin)                     
+                    
+                    # Values greater than threshold
+                    filtered_gt = arr[arr > thresh]
+                    if filtered_gt.size > 0:
+                        mean_gt = filtered_gt.mean()
+                        std_gt = filtered_gt.std()
+                    else:
+                        mean_gt, std_gt = None, None
+                    
+                    # Values less than or equal to threshold
+                    filtered_le = arr[arr <= thresh]
+                    if filtered_le.size > 0:
+                        mean_le = filtered_le.mean()
+                        std_le = filtered_le.std()
+                    else:
+                        mean_le, std_le = None, None
+                    
+                    print("Values >", thresh, ":", filtered_gt)
+                    print("Mean >", thresh, ":", mean_gt)
+                    print("Std >", thresh, ":", std_gt)
+                    
+                    print("Values <=", thresh, ":", filtered_le)
+                    print("Mean <=", thresh, ":", mean_le)
+                    print("Std <=", thresh, ":", std_le)
+ 
+                                        
                     return output,analyze_alphabet_cycles
                     break
 
@@ -388,7 +425,7 @@ if __name__ == "__main__":
     video_cfg = picam2.create_video_configuration(
     main={"size": (680, 480), "format": "RGB888"},
     controls={
-    "FrameRate": 300,
+    "FrameRate": 350,
     # "FrameDurationLimits": (8000_000, 8000_000),  # exactly 8 ms per frame → 125 fps
     "ExposureTime":   1,   # 8 ms max
     "AnalogueGain":   1.0,    # low gain to reduce sensor overhead
