@@ -124,9 +124,7 @@ class Process(mp.Process):
                 sub = frame[y_start:y_end, x_start:x_end, :]
                 gray = sub.mean(axis=2)                  
                 row_means = gray.mean(axis=1)
-                print(row_means.astype(int))
                 binary_means = (row_means > threshold).astype(np.uint8) * 255
-                print(binary_means)
                 cv2.imwrite("asd" + str(_) + ".png", binary_means)                
                 symbol_frame = int(round(longest_consecutive_ones(binary_means)/8))
             symbol_frame = 17              
@@ -134,7 +132,7 @@ class Process(mp.Process):
 
             # DECODE SYMBOLS
             min_len = round(4.5 * symbol_frame)   # how many 1’s in a row to sync
-            thresh = 10
+            thresh = 6
             # Precompute constants once
             roi_w = x_end - x_start
             roi_h = y_end - y_start
@@ -155,7 +153,7 @@ class Process(mp.Process):
                 roi = frame[y_start:y_end, x_start:x_end, :]
                 row_sums = roi.sum(axis=(1, 2), dtype=np.uint32)  # shape (roi_h,)
                 row_mean = roi.mean(axis=(1, 2), dtype=np.uint32)  # shape (roi_h,)
-                data_no_bin.append(row_mean)
+
                 #print(row_sums)
                 # 2) Threshold without division
                 binary_means = row_sums > thresh_scaled  # bool array length roi_h
@@ -172,6 +170,7 @@ class Process(mp.Process):
                     continue  # not enough samples yet
 
                 data = binary_means[idx:end_idx]
+                data_no_bin.append(row_mean[idx:end_idx])
                 # 5) Majority per symbol (vectorized)
                 #    reshape to (8, symbol_frame) → sum along axis=1 → majority
                 sym = data.reshape(8, symbol_frame)
@@ -205,6 +204,7 @@ class Process(mp.Process):
                     # Values greater than threshold
                     filtered_gt = arr[arr > thresh]
                     if filtered_gt.size > 0:
+                        mean_power = np.pow(filtered_gt,2).mean()
                         mean_gt = filtered_gt.mean()
                         std_gt = filtered_gt.std()
                     else:
@@ -225,8 +225,10 @@ class Process(mp.Process):
                     print("Values <=", thresh, ":", filtered_le)
                     print("Mean <=", thresh, ":", mean_le)
                     print("Std <=", thresh, ":", std_le)
- 
-                                        
+                    
+                    snr = 10*np.log(mean_power/max(std_gt,std_le))
+                    print(snr)
+
                     return output,analyze_alphabet_cycles
                     break
 
@@ -253,7 +255,6 @@ class Process(mp.Process):
                     # print(time.time())
                 # print(data)
 
-
     def close(self):
         self._send_queue.put("CLOSE")
         self._thread.join()
@@ -270,7 +271,6 @@ class Process(mp.Process):
             if lst[i] != lst[i-1]:
                 return True, i
         return False, i
-import numpy as np
 
 def first_zero_after_at_least_n_ones(arr: np.ndarray, n: int) -> int:
     """
@@ -417,7 +417,6 @@ def analyze_alphabet_cycles(received: List[str]) -> List[Dict[str, Any]]:
         close_cycle()
 
     return out
-
 
 if __name__ == "__main__":
     # 1️⃣  Start camera with a VIDEO config at 320×240, 60 fps
