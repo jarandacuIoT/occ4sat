@@ -105,11 +105,8 @@ class Process(mp.Process):
         # TODO: COMPUTE SNR.
             output = []
             # CONFIGURE
-            neighbor_weight = 2.0
-            kernel = np.array([neighbor_weight, 1.0, neighbor_weight])
-            kernel /= kernel.sum()              # normalize to sum=1
-            N_SAMPLES = 0
-            x_start, y_start, x_end, y_end = (340,0,420,479)
+            N_SAMPLES = 10
+            x_start, y_start, x_end, y_end = (300, 0, 405, 480)
             channel = 0
             threshold = 4
 
@@ -126,12 +123,13 @@ class Process(mp.Process):
                 row_means = gray.mean(axis=1)
                 binary_means = (row_means > threshold).astype(np.uint8) * 255
                 cv2.imwrite("asd" + str(_) + ".png", binary_means)                
-                symbol_frame = int(round(longest_consecutive_ones(binary_means)/8))
-            symbol_frame = 17              
+                symbol_frame = int(np.floor(longest_consecutive_ones(binary_means)/8))
+                print(symbol_frame)
+            symbol_frame = 15
             print(symbol_frame)
 
             # DECODE SYMBOLS
-            min_len = round(4.5 * symbol_frame)   # how many 1’s in a row to sync
+            min_len = round(6 * symbol_frame)   # how many 1’s in a row to sync
             thresh = 6
             # Precompute constants once
             roi_w = x_end - x_start
@@ -160,13 +158,13 @@ class Process(mp.Process):
 
                 # 3) Find start index of block (first 0 after ≥min_len of 1s)
                 idx = first_zero_after_at_least_n_ones(binary_means, min_len)
-                if idx is None or idx < 0:
+                if idx is None or idx < 0:           
                     continue
 
                 # 4) Slice exactly the bits for one character (8 symbols)
                 total_needed = 8 * symbol_frame
                 end_idx = idx + total_needed
-                if end_idx > binary_means.size:
+                if end_idx > binary_means.size:       
                     continue  # not enough samples yet
 
                 data = binary_means[idx:end_idx]
@@ -422,7 +420,8 @@ if __name__ == "__main__":
     # 1️⃣  Start camera with a VIDEO config at 320×240, 60 fps
     picam2 = Picamera2()
     video_cfg = picam2.create_video_configuration(
-    main={"size": (680, 480), "format": "RGB888"},
+    main={"size": (640, 480), "format": "RGB888"},   # your output
+    raw={"size": (640, 480)}, 
     controls={
     "FrameRate": 350,
     # "FrameDurationLimits": (8000_000, 8000_000),  # exactly 8 ms per frame → 125 fps

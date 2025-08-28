@@ -16,7 +16,8 @@ from picamera2 import Picamera2
 # 0️⃣  Start the camera in a small preview mode
 picam2 = Picamera2()
 preview_cfg = picam2.create_video_configuration(
-    main={"size": (680, 480), "format": "RGB888"},
+    main={"size": (640, 480), "format": "RGB888"},   # your output
+    raw={"size": (640, 480)}, 
     controls={
     "FrameRate": 120,
     "FrameDurationLimits": (8000_000, 8000_000),  # exactly 8 ms per frame → 125 fps
